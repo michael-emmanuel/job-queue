@@ -1,0 +1,9 @@
+/bin/
+*.test
+*.out
+*.prof
+/data/
+.env
+.cluster/
+bench-results/
+deploy/.env

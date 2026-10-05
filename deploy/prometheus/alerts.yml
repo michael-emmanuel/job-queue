@@ -1,0 +1,24 @@
+# Example alert rules, written against metric names this repo exports.
+# Thresholds are illustrative; tune them to your SLOs.
+groups:
+- name: jobqueue
+  rules:
+  - alert: NodeDown
+    expr: up{job="jobqueue"} == 0
+    for: 1m
+  - alert: LeaderlessPartitions
+    expr: jobqueue_leaderless_partitions > 0
+    for: 30s
+  - alert: FailedElections
+    expr: increase(jobqueue_failed_elections_total[5m]) > 3
+  - alert: ReplicaLagging
+    expr: jobqueue_replica_lag_entries > 1000
+    for: 5m
+  - alert: DeadLettersAppearing
+    expr: increase(jobqueue_dead_lettered_total[5m]) > 0
+  - alert: LeaseExpiriesHigh
+    expr: rate(jobqueue_lease_expired_total[5m]) > 1
+    for: 10m
+  - alert: QueueDelayHigh
+    expr: histogram_quantile(0.99, sum by (le) (rate(jobqueue_queue_delay_seconds_bucket[5m]))) > 30
+    for: 10m

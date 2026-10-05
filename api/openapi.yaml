@@ -1,0 +1,112 @@
+openapi: 3.0.3
+info:
+  title: Job queue public API
+  version: "1"
+  description: |
+    Served by cmd/broker (single node) and cmd/gateway (cluster). Bearer-key auth;
+    keys carry a tenant and roles. Hand-written to match internal/api; if they
+    disagree, the code wins.
+servers: [{url: http://127.0.0.1:8080}]
+security: [{bearer: []}]
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties: {code: {type: string}, message: {type: string}, request_id: {type: string}}
+    SubmitRequest:
+      type: object
+      required: [queue, type]
+      properties:
+        queue: {type: string}
+        type: {type: string}
+        payload: {type: object}
+        priority: {type: integer}
+        run_at: {type: string, format: date-time}
+        partition_key: {type: string, description: "same key, same partition"}
+        idempotency_key: {type: string, description: "alternative to the Idempotency-Key header"}
+    SubmitResponse:
+      type: object
+      properties: {job_id: {type: string}, queue: {type: string}, state: {type: string}, duplicate: {type: boolean}}
+    PullRequest:
+      type: object
+      properties:
+        worker: {type: string}
+        max: {type: integer}
+        visibility: {type: string, example: 30s}
+        wait: {type: string, example: 20s}
+        group: {type: string, description: consumer group (cluster mode)}
+    AttemptBody:
+      type: object
+      required: [attempt]
+      properties: {attempt: {type: integer, description: fencing token from the delivery}, error: {type: string}, retryable: {type: boolean}}
+  responses:
+    Overload:
+      description: "429 rate_limited / queue_full or 503 overloaded; honour Retry-After"
+      headers: {Retry-After: {schema: {type: integer}}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+paths:
+  /v1/jobs:
+    post:
+      summary: Submit a job (producer)
+      parameters: [{name: Idempotency-Key, in: header, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SubmitRequest'}}}}
+      responses:
+        "201": {description: accepted, content: {application/json: {schema: {$ref: '#/components/schemas/SubmitResponse'}}}}
+        "200": {description: duplicate idempotency key; original returned}
+        "429": {$ref: '#/components/responses/Overload'}
+        "503": {$ref: '#/components/responses/Overload'}
+  /v1/jobs/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    get: {summary: Job status (404 once completed), responses: {"200": {description: ok}, "404": {description: not found}}}
+    delete: {summary: Cancel a live job (producer), responses: {"200": {description: cancelled}}}
+  /v1/queues/{queue}/pull:
+    parameters: [{name: queue, in: path, required: true, schema: {type: string}}]
+    post:
+      summary: Long-poll for jobs (worker)
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/PullRequest'}}}}
+      responses: {"200": {description: "{jobs: [...]} possibly empty"}}
+  /v1/jobs/{id}/ack:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      summary: Acknowledge (worker)
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/AttemptBody'}}}}
+      responses: {"200": {description: ok}, "409": {description: stale_lease}}
+  /v1/jobs/{id}/fail:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      summary: Report failure (worker); retried with backoff or dead-lettered
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/AttemptBody'}}}}
+      responses: {"200": {description: ok}, "409": {description: stale_lease}}
+  /v1/jobs/{id}/renew:
+    parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+    post:
+      summary: Extend the visibility deadline (worker)
+      requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/AttemptBody'}}}}
+      responses: {"200": {description: ok}, "409": {description: stale_lease}}
+  /v1/queues:
+    post: {summary: Create queue (admin), responses: {"201": {description: created}}}
+    get: {summary: List queues (admin), responses: {"200": {description: ok}}}
+  /v1/queues/{queue}:
+    parameters: [{name: queue, in: path, required: true, schema: {type: string}}]
+    get: {summary: Queue statistics (admin), responses: {"200": {description: ok}}}
+    delete: {summary: Delete queue (admin), responses: {"200": {description: ok}}}
+  /v1/queues/{queue}/dlq:
+    parameters: [{name: queue, in: path, required: true, schema: {type: string}}]
+    get: {summary: List dead letters (admin), responses: {"200": {description: ok}}}
+  /v1/queues/{queue}/dlq/{id}/replay:
+    parameters:
+      - {name: queue, in: path, required: true, schema: {type: string}}
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post: {summary: Replay a dead letter (admin), responses: {"200": {description: ok}}}
+  /v1/queues/{queue}/dlq/{id}:
+    parameters:
+      - {name: queue, in: path, required: true, schema: {type: string}}
+      - {name: id, in: path, required: true, schema: {type: string}}
+    delete: {summary: Delete a dead letter (admin), responses: {"200": {description: ok}}}
+  /healthz: {get: {security: [], summary: Liveness, responses: {"200": {description: ok}}}}
+  /readyz: {get: {security: [], summary: Readiness, responses: {"200": {description: ready}, "503": {description: not ready}}}}
